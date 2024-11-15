@@ -25,15 +25,10 @@ export async function GET(request: NextRequest) {
         OFFSET ${offset}
       `,
       QueryExecutionContext: {
-        Database: 'project',
-        Catalog: 'AwsDataCatalog'
+        Database: 'project'
       },
-      WorkGroup: 'primary',
       ResultConfiguration: {
-        OutputLocation: 's3://danielspohn-bioinformatics-ms/athena-results/',
-        EncryptionConfiguration: {
-          EncryptionOption: 'SSE_S3'
-        }
+        OutputLocation: 's3://danielspohn-bioinformatics-ms/athena-results/'
       }
     };
 
