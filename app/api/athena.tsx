@@ -1,6 +1,7 @@
 // pages/api/athena.ts
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { Athena } from 'aws-sdk';
+import { Athena, AWSError } from 'aws-sdk';
+import { GetQueryExecutionOutput } from 'aws-sdk/clients/athena';
 
 interface DataRow {
   [key: string]: string;
@@ -20,7 +21,7 @@ export default async function handler(
   });
 
   try {
-    const params = {
+    const params: Athena.StartQueryExecutionInput = {
       QueryString: 'SELECT * FROM project.gse LIMIT 10',
       QueryExecutionContext: {
         Database: 'project'
@@ -31,14 +32,28 @@ export default async function handler(
     };
 
     const startQueryResponse = await athena.startQueryExecution(params).promise();
-    const queryExecutionId = startQueryResponse.QueryExecutionId;
+    
+    // Make sure queryExecutionId is not undefined
+    if (!startQueryResponse.QueryExecutionId) {
+      throw new Error('Failed to get QueryExecutionId');
+    }
 
-    let queryStatus;
+    const queryExecutionId = startQueryResponse.QueryExecutionId;
+    let queryStatus: string;
+
     do {
       const queryExecution = await athena
-        .getQueryExecution({ QueryExecutionId: queryExecutionId })
+        .getQueryExecution({
+          QueryExecutionId: queryExecutionId
+        })
         .promise();
+
+      if (!queryExecution.QueryExecution?.Status?.State) {
+        throw new Error('Failed to get query status');
+      }
+
       queryStatus = queryExecution.QueryExecution.Status.State;
+
       if (queryStatus === 'FAILED' || queryStatus === 'CANCELLED') {
         throw new Error(`Query ${queryStatus}`);
       }
@@ -46,17 +61,26 @@ export default async function handler(
     } while (queryStatus === 'RUNNING' || queryStatus === 'QUEUED');
 
     const results = await athena
-      .getQueryResults({ QueryExecutionId: queryExecutionId })
+      .getQueryResults({
+        QueryExecutionId: queryExecutionId
+      })
       .promise();
 
+    if (!results.ResultSet?.ResultSetMetadata?.ColumnInfo || !results.ResultSet.Rows) {
+      throw new Error('Invalid query results format');
+    }
+
     const headers = results.ResultSet.ResultSetMetadata.ColumnInfo.map(
-      column => column.Name
+      column => column.Name || ''
     );
+
     const rows = results.ResultSet.Rows.slice(1).map(row => {
       const rowData: DataRow = {};
-      row.Data.forEach((cell, index) => {
-        rowData[headers[index]] = cell.VarCharValue;
-      });
+      if (row.Data) {
+        row.Data.forEach((cell, index) => {
+          rowData[headers[index]] = cell.VarCharValue || '';
+        });
+      }
       return rowData;
     });
 
