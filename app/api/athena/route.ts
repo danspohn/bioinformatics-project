@@ -1,8 +1,12 @@
 // app/api/athena/route.ts
 import { NextResponse } from 'next/server';
 import { Athena } from 'aws-sdk';
+import { NextRequest } from 'next/server';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  const offset = parseInt(searchParams.get('offset') || '0');
+  
   const athena = new Athena({
     region: 'us-east-1',
     apiVersion: '2017-05-18'
@@ -10,26 +14,16 @@ export async function GET() {
 
   try {
     console.log('Starting Athena query process...');
-    
-    // Test Athena connectivity first
-    try {
-      const workgroups = await athena.listWorkGroups({}).promise();
-      console.log('Workgroups available:', workgroups.WorkGroups?.map(wg => wg.Name));
-    } catch (e) {
-      console.error('Error listing workgroups:', e);
-    }
 
-    // Test database access
-    try {
-      const databases = await athena.listDatabases({CatalogName: 'AwsDataCatalog'}).promise();
-      console.log('Available databases:', databases.DatabaseList?.map(db => db.Name));
-    } catch (e) {
-      console.error('Error listing databases:', e);
-    }
-
-    console.log('Preparing to execute query...');
+    // Modified query to use OFFSET
     const params: Athena.StartQueryExecutionInput = {
-      QueryString: 'SELECT * FROM project.gse LIMIT 10',
+      QueryString: `
+        SELECT title, submission_date 
+        FROM project.gse 
+        ORDER BY submission_date DESC
+        LIMIT 10 
+        OFFSET ${offset}
+      `,
       QueryExecutionContext: {
         Database: 'project',
         Catalog: 'AwsDataCatalog'
@@ -43,8 +37,6 @@ export async function GET() {
       }
     };
 
-    console.log('Starting query execution with params:', JSON.stringify(params, null, 2));
-
     const startQueryResponse = await athena.startQueryExecution(params).promise();
     
     if (!startQueryResponse.QueryExecutionId) {
@@ -52,12 +44,10 @@ export async function GET() {
     }
 
     const queryExecutionId = startQueryResponse.QueryExecutionId;
-    console.log('Query execution started with ID:', queryExecutionId);
-    
     let queryStatus: string;
     let statusDetail = '';
     let attempts = 0;
-    const maxAttempts = 30; // Maximum number of status check attempts
+    const maxAttempts = 30;
 
     do {
       const queryExecution = await athena
@@ -72,11 +62,8 @@ export async function GET() {
 
       queryStatus = queryExecution.QueryExecution.Status.State;
       statusDetail = queryExecution.QueryExecution.Status.StateChangeReason || '';
-      
-      console.log(`Query status check ${attempts + 1}:`, queryStatus, statusDetail ? `(${statusDetail})` : '');
 
       if (queryStatus === 'FAILED') {
-        console.error('Query execution details:', JSON.stringify(queryExecution.QueryExecution, null, 2));
         throw new Error(`Query failed: ${statusDetail}`);
       }
       if (queryStatus === 'CANCELLED') {
@@ -91,15 +78,11 @@ export async function GET() {
       }
     } while (queryStatus === 'RUNNING' || queryStatus === 'QUEUED');
 
-    console.log('Query completed, fetching results...');
-
     const results = await athena
       .getQueryResults({
         QueryExecutionId: queryExecutionId
       })
       .promise();
-
-    console.log('Raw results received:', JSON.stringify(results, null, 2));
 
     if (!results.ResultSet?.ResultSetMetadata?.ColumnInfo || !results.ResultSet.Rows) {
       throw new Error('Invalid query results format');
@@ -119,37 +102,23 @@ export async function GET() {
       return rowData;
     });
 
-    console.log(`Successfully processed ${rows.length} rows`);
+    // Check if there are more results
+    const hasMore = rows.length === 10;
 
     return NextResponse.json({ 
       data: rows,
-      metadata: {
-        queryExecutionId,
-        columnCount: headers.length,
-        rowCount: rows.length
+      pagination: {
+        offset,
+        hasMore
       }
     });
   } catch (error) {
     console.error('Detailed Athena error:', error);
-    console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
     
-    if (error instanceof Error && 'QueryExecution' in error) {
-      const athenaError = error as any;
-      console.error('Additional Athena error details:', {
-        state: athenaError.QueryExecution?.Status?.State,
-        stateChangeReason: athenaError.QueryExecution?.Status?.StateChangeReason,
-        queryId: athenaError.QueryExecution?.QueryExecutionId,
-        athenaErrorCode: athenaError.AthenaErrorCode,
-        errorCode: athenaError.ErrorCode,
-        errorType: athenaError.__type
-      });
-    }
-
     return NextResponse.json(
       { 
         error: error instanceof Error ? error.message : 'An error occurred',
-        details: error instanceof Error ? error.stack : undefined,
-        timestamp: new Date().toISOString()
+        details: error instanceof Error ? error.stack : undefined
       },
       { status: 500 }
     );
