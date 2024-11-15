@@ -21,8 +21,8 @@ export async function GET(request: NextRequest) {
         SELECT title, submission_date 
         FROM project.gse 
         ORDER BY submission_date DESC
-        LIMIT 10 
         OFFSET ${offset}
+        LIMIT 10 
       `,
       QueryExecutionContext: {
         Database: 'project',
